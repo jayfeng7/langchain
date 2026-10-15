@@ -1564,6 +1564,41 @@ def test_count_tokens_approximately_tool_calls() -> None:
     assert count_tokens_approximately(messages) == 29
 
 
+def test_count_tokens_approximately_tool_calls_with_list_content() -> None:
+    """Tool calls count the same regardless of the content shape (#41165)."""
+    tool_calls = [
+        {"name": "test_tool", "args": {"payload": "x" * 4000}, "id": "1"}
+    ]
+    str_count = count_tokens_approximately(
+        [AIMessage(content="", tool_calls=tool_calls)]
+    )
+    empty_list_count = count_tokens_approximately(
+        [AIMessage(content=[], tool_calls=tool_calls)]
+    )
+    text_list_count = count_tokens_approximately(
+        [AIMessage(content=[{"type": "text", "text": ""}], tool_calls=tool_calls)]
+    )
+    # A 4,000-char tool argument must be counted in every content shape; the
+    # list shapes previously dropped the whole tool_calls payload.
+    assert str_count == empty_list_count == text_list_count
+
+
+def test_count_tokens_approximately_embedded_tool_calls_not_double_counted() -> None:
+    """`tool_use` blocks already encode the call: don't count it twice (#41165)."""
+    tool_calls = [{"name": "test_tool", "args": {"foo": "bar"}, "id": "1"}]
+    block = {
+        "type": "tool_use",
+        "id": "1",
+        "name": "test_tool",
+        "input": {"foo": "bar"},
+    }
+    content_only = count_tokens_approximately([AIMessage(content=[block])])
+    with_calls = count_tokens_approximately(
+        [AIMessage(content=[block], tool_calls=tool_calls)]
+    )
+    assert with_calls == content_only
+
+
 def test_count_tokens_approximately_custom_token_length() -> None:
     messages = [
         # 11 chars + 4 role chars -> (4 tokens of length 4 / 8 tokens of length 2) + 3

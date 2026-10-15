@@ -2376,14 +2376,21 @@ def count_tokens_approximately(
             content = repr(message.content)  # type: ignore[unreachable]
             message_chars += len(content)
 
-        if (
-            isinstance(message, AIMessage)
-            # exclude Anthropic format as tool calls are already included in the content
-            and not isinstance(message.content, list)
-            and message.tool_calls
-        ):
-            tool_calls_content = repr(message.tool_calls)
-            message_chars += len(tool_calls_content)
+        if isinstance(message, AIMessage) and message.tool_calls:
+            # Skip counting `tool_calls` only when the content already encodes
+            # them (e.g. Anthropic `tool_use` blocks) so they aren't counted
+            # twice. A list content that carries no tool-call blocks (the v1
+            # content-blocks shape, or OpenAI responses whose content is a
+            # text-block list) must still count its tool calls.
+            content_encodes_tool_calls = isinstance(message.content, list) and any(
+                isinstance(block, dict)
+                and block.get("type")
+                in {"tool_use", "tool_call", "function_call", "custom_tool_call"}
+                for block in message.content
+            )
+            if not content_encodes_tool_calls:
+                tool_calls_content = repr(message.tool_calls)
+                message_chars += len(tool_calls_content)
 
         if isinstance(message, ToolMessage):
             message_chars += len(message.tool_call_id)
