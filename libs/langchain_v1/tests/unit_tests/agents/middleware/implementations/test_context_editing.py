@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from langchain_core.language_models.fake_chat_models import FakeChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -578,3 +580,65 @@ async def test_custom_token_counter_forces_clearing_async() -> None:
     cleared_tool = modified_request.messages[1]
     assert isinstance(cleared_tool, ToolMessage)
     assert cleared_tool.content == "[cleared]"
+
+
+SECRET = "123-45-6789"
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "tool_call", "id": "call-1", "name": "lookup", "args": {"ssn": SECRET}},
+        {"type": "tool_use", "id": "call-1", "name": "lookup", "input": {"ssn": SECRET}},
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "lookup",
+            "arguments": '{"ssn": "%s"}' % SECRET,
+        },
+    ],
+    ids=["v1_tool_call", "anthropic_tool_use", "openai_function_call"],
+)
+def test_clears_tool_inputs_held_in_content_blocks(block: dict) -> None:
+    """clear_tool_inputs must also clear the copy kept inside AIMessage.content."""
+    tool_call_id = "call-1"
+    ai_message = AIMessage(
+        content=["Looking that up.", dict(block)],
+        tool_calls=[{"id": tool_call_id, "name": "lookup", "args": {"ssn": SECRET}}],
+    )
+    tool_message = ToolMessage(content="x" * 200, tool_call_id=tool_call_id)
+
+    _state, request = _make_state_and_request([ai_message, tool_message])
+    middleware = ContextEditingMiddleware(
+        edits=[ClearToolUsesEdit(trigger=50, clear_tool_inputs=True, keep=0)],
+    )
+
+    modified_request = None
+
+    def mock_handler(req: ModelRequest) -> ModelResponse:
+        nonlocal modified_request
+        modified_request = req
+        return ModelResponse(result=[AIMessage(content="mock response")])
+
+    middleware.wrap_model_call(request, mock_handler)
+
+    assert modified_request is not None
+    cleared_ai = modified_request.messages[0]
+    assert isinstance(cleared_ai, AIMessage)
+    assert cleared_ai.tool_calls[0]["args"] == {}
+    assert "Looking that up." in cleared_ai.content
+    cleared_blocks = [b for b in cleared_ai.content if isinstance(b, dict)]
+    assert len(cleared_blocks) == 1
+    cleared_block = cleared_blocks[0]
+    assert SECRET not in str(cleared_block)
+    if "input" in cleared_block:
+        assert cleared_block["input"] == {}
+    if "args" in cleared_block:
+        assert cleared_block["args"] == {}
+    if "arguments" in cleared_block:
+        assert cleared_block["arguments"] == "{}"
+
+    # The original request must not be mutated.
+    request_ai = request.messages[0]
+    assert isinstance(request_ai, AIMessage)
+    assert SECRET in str(request_ai.content)

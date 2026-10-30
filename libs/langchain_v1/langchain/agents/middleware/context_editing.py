@@ -168,6 +168,38 @@ class ClearToolUsesEdit(ContextEdit):
                 cleared_any = True
             updated_tool_calls.append(updated_call)
 
+        content = message.content
+        content_blocks_cleared = False
+        if isinstance(content, list):
+            new_blocks = []
+            for block in content:
+                if not isinstance(block, dict):
+                    new_blocks.append(block)
+                    continue
+                block_id = block.get("id") or block.get("call_id")
+                if block_id != tool_call_id:
+                    new_blocks.append(block)
+                    continue
+                block_type = block.get("type")
+                if block_type in ("tool_use", "tool_call"):
+                    new_block = dict(block)
+                    if "input" in new_block:
+                        new_block["input"] = {}
+                    if "args" in new_block:
+                        new_block["args"] = {}
+                    new_blocks.append(new_block)
+                    content_blocks_cleared = True
+                elif block_type == "function_call" and "arguments" in block:
+                    new_block = dict(block)
+                    new_block["arguments"] = "{}"
+                    new_blocks.append(new_block)
+                    content_blocks_cleared = True
+                else:
+                    new_blocks.append(block)
+            if content_blocks_cleared:
+                content = new_blocks
+            cleared_any = cleared_any or content_blocks_cleared
+
         metadata = dict(getattr(message, "response_metadata", {}))
         context_entry = dict(metadata.get("context_editing", {}))
         if cleared_any:
@@ -176,12 +208,14 @@ class ClearToolUsesEdit(ContextEdit):
             context_entry["cleared_tool_inputs"] = sorted(cleared_ids)
             metadata["context_editing"] = context_entry
 
-        return message.model_copy(
-            update={
-                "tool_calls": updated_tool_calls,
-                "response_metadata": metadata,
-            }
-        )
+        update = {
+            "tool_calls": updated_tool_calls,
+            "response_metadata": metadata,
+        }
+        if content_blocks_cleared:
+            update["content"] = content
+
+        return message.model_copy(update=update)
 
 
 class ContextEditingMiddleware(AgentMiddleware[AgentState[ResponseT], ContextT, ResponseT]):
